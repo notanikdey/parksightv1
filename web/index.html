@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ParkSight BLR — Parking Congestion Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<!-- ===================== HEADER ===================== -->
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">P<span class="dot"></span></div>
+    <div class="brand-text">
+      <h1>ParkSight <span>BLR</span></h1>
+      <p>AI-driven hotspot prediction and traffic-flow risk intelligence for targeted enforcement</p>
+    </div>
+  </div>
+  <div class="header-meta">
+    <span class="pill pill-live"><i class="blink"></i> Flipkart Gridlock 2.0</span>
+    <span class="pill" id="date-range">— to —</span>
+    <span class="pill pill-data" id="row-count">— records</span>
+  </div>
+</header>
+
+<!-- ===================== KPI STRIP ===================== -->
+<section class="kpi-strip" id="kpi-strip"></section>
+
+<!-- ===================== MAIN: MAP + ZONES ===================== -->
+<section class="main-grid">
+  <div class="map-card">
+    <div class="map-toolbar">
+      <div class="map-title">
+        <h2>Illegal-Parking Congestion Heatmap</h2>
+        <span class="sub">Hotspots weighted by prediction + traffic-flow obstruction risk</span>
+      </div>
+      <div class="map-controls">
+        <div class="seg" id="layer-toggle">
+          <button data-layer="heat" class="active">Heatmap</button>
+          <button data-layer="zones">Enforcement zones</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="map"></div>
+
+    <!-- Live deployment slider -->
+    <div class="deploy-bar">
+      <div class="deploy-label">
+        <span class="deploy-kicker">PREDICTIVE DEPLOYMENT VIEW</span>
+        <span class="deploy-time" id="deploy-time">All day</span>
+      </div>
+      <input type="range" id="hour-slider" min="-1" max="23" value="-1" />
+      <button class="ghost-btn" id="reset-hour">Reset</button>
+    </div>
+
+    <div class="legend">
+      <span>Lower impact</span>
+      <div class="legend-bar"></div>
+      <span>Higher impact</span>
+    </div>
+  </div>
+
+  <!-- ENFORCEMENT PRIORITY -->
+  <aside class="side-card">
+    <div class="side-head">
+      <h2>Enforcement Priority</h2>
+      <span class="sub" id="zone-count">— zones ranked by impact</span>
+    </div>
+    <div class="zone-search">
+      <input type="text" id="zone-filter" placeholder="Filter zones / localities…" />
+    </div>
+    <div class="zone-list" id="zone-list"></div>
+  </aside>
+</section>
+
+<!-- ===================== DECISION PANELS ===================== -->
+<section class="decision-grid">
+  <div class="panel decision-panel">
+    <div class="panel-head">
+      <h3>Hourly hotspot prediction</h3>
+      <span class="sub" id="forecast-sub">ML forecast for the selected patrol hour</span>
+    </div>
+    <div id="forecast-board"></div>
+  </div>
+
+  <div class="panel decision-panel">
+    <div class="panel-head">
+      <h3>Traffic-flow obstruction risk</h3>
+      <span class="sub">Estimated obstruction risk from offence type, timing and junction context</span>
+    </div>
+    <div id="impact-board"></div>
+  </div>
+</section>
+
+<!-- ===================== SMART PATROL SCHEDULER ===================== -->
+<section class="scheduler-grid">
+  <div class="panel scheduler-panel">
+    <div class="panel-head">
+      <h3>ParkSched patrol scheduler</h3>
+      <span class="sub" id="scheduler-sub">ML-prioritized scheduling for limited enforcement units</span>
+    </div>
+    <div id="scheduler-board"></div>
+  </div>
+</section>
+
+<!-- ===================== AI EARLY WARNING ===================== -->
+<section class="ai-grid">
+  <div class="panel ai-panel">
+    <div class="panel-head">
+      <h3>AI early-warning detector</h3>
+      <span class="sub" id="ai-sub">Anomaly detector for abnormal recent zone-hour surges</span>
+    </div>
+    <div id="ai-alerts-board"></div>
+  </div>
+</section>
+
+<!-- ===================== ANALYTICS ===================== -->
+<section class="analytics">
+  <div class="panel temporal-panel">
+    <div class="panel-head">
+      <h3>Parking pressure by weekday and hour</h3>
+      <span class="sub">Darker cells mean more parking violations in that weekday-hour window</span>
+    </div>
+    <div id="temporal-heat"></div>
+    <div class="temporal-axis" id="temporal-axis"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h3>Violation mix</h3><span class="sub">Carriageway-impacting types</span></div>
+    <canvas id="chart-violations"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h3>Hourly demand curve</h3><span class="sub">Total violations across the day</span></div>
+    <canvas id="chart-hourly"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h3>Traffic-flow obstruction risk</h3><span class="sub">Zones by estimated impact band</span></div>
+    <canvas id="chart-impact"></canvas>
+  </div>
+
+
+  <div class="panel">
+    <div class="panel-head"><h3>Top enforcement jurisdictions</h3><span class="sub">Violations by police station</span></div>
+    <canvas id="chart-stations"></canvas>
+  </div>
+</section>
+
+<!-- ===================== ZONE DETAIL MODAL ===================== -->
+<div class="modal-overlay" id="modal">
+  <div class="modal" id="modal-body"></div>
+</div>
+
+<footer class="foot">
+  <span>ParkSight BLR · built on <b id="foot-rows">—</b> real Bengaluru Traffic Police records</span>
+  <span>Prototype · Flipkart Gridlock Hackathon 2.0 — Round 2</span>
+</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
