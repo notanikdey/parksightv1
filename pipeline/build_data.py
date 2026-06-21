@@ -13,7 +13,7 @@ Pipeline stages
 5.  Layer 4: estimate traffic-flow obstruction risk from violation type,
     peak-hour concentration and junction spillback risk.
 6.  Merge hot cells into named enforcement zones with DBSCAN and rank them.
-7.  Layer 1: train a supervised zone×day×hour ML forecast and backtest it
+7.  Layer 1: train a supervised zone × day × hour ML forecast and backtest it
     so the dashboard predicts patrol priority instead of only mapping history.
 8.  Layer 5: expose ParkSched, an MLFQ-inspired patrol scheduler that turns
     ML need scores into deployable patrol slots with aging fairness.
@@ -37,25 +37,25 @@ from sklearn.cluster import DBSCAN
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# --------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------
+
+#Config
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 WORKSPACE = os.path.dirname(ROOT)
 RAW_CSV = os.path.join(WORKSPACE, "jan to may police violation_anonymized791b166.csv")
 OUT_DIR = os.path.join(ROOT, "web", "data")
 
-# Bengaluru bounding box (filters out bad / null coordinates).
+#Bengaluru bounding box (filters out bad / null coordinates).
 BLR_BBOX = dict(lat_min=12.70, lat_max=13.25, lon_min=77.35, lon_max=77.85)
 
-# ~165 m grid (0.0015 deg lat; longitude distortion is acceptable for this city-scale prototype).
+#~165 m grid (0.0015 deg lat; longitude distortion is acceptable for this city-scale prototype).
 GRID = 0.0015
 
-# Rush-hour windows (IST) used to weight congestion impact.
+#Rush-hour windows (IST) used to weight congestion impact.
 PEAK_HOURS = set(range(8, 12)) | set(range(16, 22))
 
-# Severity weight per violation type -- how badly it chokes a carriageway / intersection.
+#Severity weight per violation type -- how badly it chokes a carriageway / intersection.
 SEVERITY = {
     "PARKING NEAR ROAD CROSSING": 1.00,
     "PARKING NEAR TRAFFIC LIGHT OR ZEBRA CROSS": 1.00,
@@ -69,9 +69,9 @@ SEVERITY = {
     "NO PARKING": 0.55,
 }
 
-# Layer 4: transparent traffic-flow obstruction weights.
-# This is not measured speed loss. It is a calibration-ready proxy for lane blockage,
-# intersection spillback and flow obstruction until speed/CCTV queue data is connected.
+#Layer 4: transparent traffic-flow obstruction weights.
+#This is not measured speed loss. It is a calibration-ready proxy for lane blockage,
+#intersection spillback and flow obstruction until speed/CCTV queue data is connected.
 FLOW_OBSTRUCTION = {
     "PARKING NEAR ROAD CROSSING": 1.00,
     "PARKING NEAR TRAFFIC LIGHT OR ZEBRA CROSS": 1.00,
@@ -85,7 +85,7 @@ FLOW_OBSTRUCTION = {
     "PARKING ON FOOTPATH": 0.52,
 }
 
-# Validation status confidence. Unknown/null rows are retained but discounted.
+#Validation status confidence. Unknown/null rows are retained but discounted.
 CONFIDENCE = {
     "approved": 1.0,
     "processing": 0.7,
@@ -96,13 +96,12 @@ CONFIDENCE = {
     "duplicate": 0.0,
 }
 
-# Any violation type that contains "PARK" is parking-relevant.
+#Any violation type that contains "PARK" is parking-relevant.
 PARK_RE = re.compile(r"PARK", re.I)
 
 
-# --------------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------------
+#Helpers
+
 def parse_violations(raw: str) -> list[str]:
     """Parse the stringified JSON array of violation labels."""
     if not isinstance(raw, str) or not raw.strip():
@@ -153,9 +152,7 @@ def impact_band(score: float) -> str:
     return "Low"
 
 
-# --------------------------------------------------------------------------
-# 1-2. Load + clean
-# --------------------------------------------------------------------------
+#1-2. Load + clean
 def load() -> pd.DataFrame:
     print("Loading raw CSV ...")
     required = [
@@ -179,7 +176,7 @@ def load() -> pd.DataFrame:
         & df.longitude.between(b["lon_min"], b["lon_max"])
     ]
 
-    # Timestamps -> IST.
+    #Timestamps -> IST.
     df["created"] = pd.to_datetime(df["created_datetime"], errors="coerce", utc=True)
     df = df.dropna(subset=["created"])
     df["created"] = df["created"] + timedelta(hours=5, minutes=30)
@@ -187,23 +184,23 @@ def load() -> pd.DataFrame:
     df["weekday"] = df["created"].dt.weekday  # Mon=0
     df["date"] = df["created"].dt.date
 
-    # Validation-aware confidence. Rejected/duplicate rows stay in raw auditability,
-    # but they receive 0 confidence and therefore do not drive scores.
+    #Validation-aware confidence. Rejected/duplicate rows stay in raw auditability,
+    #but they receive 0 confidence and therefore do not drive scores.
     if "validation_status" in df.columns:
         df["validation_status"] = df["validation_status"].fillna("unknown").astype(str).str.strip().str.lower()
     else:
         df["validation_status"] = "unknown"
     df["confidence"] = df["validation_status"].map(CONFIDENCE).fillna(0.6).astype(float)
 
-    # Violation labels.
+    #Violation labels.
     df["violations"] = df["violation_type"].apply(parse_violations)
     df = df[df["violations"].map(len) > 0]
 
-    # Parking-relevant subset: at least one violation contains "PARK".
+    #Parking-relevant subset: at least one violation contains "PARK".
     df["is_parking"] = df["violations"].apply(lambda vs: any(PARK_RE.search(v) for v in vs))
     df = df[df["is_parking"]].copy()
 
-    # Per-row factors.
+    #Per-row factors.
     df["severity"] = df["violations"].apply(lambda vs: row_max_weight(vs, SEVERITY, 0.55))
     df["obstruction"] = df["violations"].apply(lambda vs: row_max_weight(vs, FLOW_OBSTRUCTION, 0.60))
     df["junction_clean"] = df["junction_name"].apply(clean_junction)
@@ -215,13 +212,11 @@ def load() -> pd.DataFrame:
     return df
 
 
-# --------------------------------------------------------------------------
-# 3-4. Grid heatmap + Congestion Impact Risk Score
-# --------------------------------------------------------------------------
+#3-4. Grid heatmap + Congestion Impact Risk Score
 def build_cells(df: pd.DataFrame) -> pd.DataFrame:
     df = assign_grid(df.copy())
 
-    # Precompute boolean factors once. This is much faster than groupby lambdas.
+    #Precompute boolean factors once. This is much faster than groupby lambdas.
     df["is_peak"] = df["hour"].isin(PEAK_HOURS).astype(float)
     df["has_junction"] = (df["junction_clean"].str.len() > 0).astype(float)
 
@@ -239,11 +234,11 @@ def build_cells(df: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
 
     span = int(df["date"].nunique()) or 1
-    # Chronic recurrence: fraction of calendar days in the data window this cell saw a violation.
+    #Chronic recurrence: fraction of calendar days in the data window this cell saw a violation.
     cells["recurrence"] = (cells["ndays"] / span).clip(0, 1)
 
-    # --- Congestion Impact Risk Score (CIRS/CIS, 0-100) -------------------
-    # density: log-scaled confidence-weighted violation volume (saturating)
+    #--- Congestion Impact Risk Score (CIRS/CIS, 0-100) -------------------
+    #density: log-scaled confidence-weighted violation volume (saturating)
     dens = np.log1p(cells["weighted_count"].clip(lower=0)) / np.log1p(cells["weighted_count"].max())
     sev = cells["severity"]                       # road-criticality of violations
     peak = 0.5 + 0.5 * cells["peak_share"]        # rush-hour concentration multiplier
@@ -253,9 +248,9 @@ def build_cells(df: pd.DataFrame) -> pd.DataFrame:
     cells["cis"] = (100 * raw / raw.max()).round(1)
     cells["density_n"] = (100 * dens).round(1)
 
-    # --- Layer 4: traffic-flow obstruction / calibration proxy ------------
-    # Until speed, queue length or lane occupancy feeds are attached, this is a transparent
-    # obstruction-risk proxy from the fields available in the violation dump.
+    #--- Layer 4: traffic-flow obstruction / calibration proxy ------------
+    #Until speed, queue length or lane occupancy feeds are attached, this is a transparent
+    #obstruction-risk proxy from the fields available in the violation dump.
     obstruction_raw = (
         0.40 * cells["obstruction"] +
         0.25 * cells["severity"] +
@@ -267,18 +262,16 @@ def build_cells(df: pd.DataFrame) -> pd.DataFrame:
     return cells
 
 
-# --------------------------------------------------------------------------
-# 5. Enforcement zones (DBSCAN over hot cells)
-# --------------------------------------------------------------------------
+#5. Enforcement zones (DBSCAN over hot cells)
 def build_zones(df: pd.DataFrame, cells: pd.DataFrame, top_cells: int = 600) -> tuple[list[dict], dict, dict, list[dict]]:
     hot = cells.sort_values("flow_impact_score", ascending=False).head(top_cells).copy()
     coords = np.radians(hot[["lat", "lon"]].to_numpy())
-    # eps ~ 300 m (in radians on unit sphere; earth radius 6371 km)
+    #eps ~ 300 m (in radians on unit sphere; earth radius 6371 km)
     eps = 0.30 / 6371.0
     db = DBSCAN(eps=eps, min_samples=1, metric="haversine").fit(coords)
     hot["zone"] = db.labels_
 
-    # Fast row-zone join: avoid scanning all rows once per zone.
+    #Fast row-zone join: avoid scanning all rows once per zone.
     df = assign_grid(df.copy())
     df_hot = df.merge(hot[["gy", "gx", "zone"]], on=["gy", "gx"], how="inner")
 
@@ -296,25 +289,25 @@ def build_zones(df: pd.DataFrame, cells: pd.DataFrame, top_cells: int = 600) -> 
         total = int(len(rows))
         weighted_total = float(rows["confidence"].sum())
 
-        # Weighted centroid (by cell count).
+        #Weighted centroid (by cell count).
         lat = float(np.average(g.lat, weights=g["count"]))
         lon = float(np.average(g.lon, weights=g["count"]))
 
-        # Zone scores: volume-weighted mean of member cells, lightly boosted by spatial extent.
+        #Zone scores: volume-weighted mean of member cells, lightly boosted by spatial extent.
         zcis = float(np.average(g.cis, weights=g["count"]))
         zcis = min(100.0, zcis * (1 + 0.04 * (len(g) - 1)))
         zflow = float(np.average(g.flow_impact_score, weights=g["count"]))
         zflow = min(100.0, zflow * (1 + 0.03 * (len(g) - 1)))
         zobstruction = float(np.average(g.obstruction_risk, weights=g["count"]))
 
-        # Dominant descriptors.
+        #Dominant descriptors.
         vio = Counter(v for vs in rows["violations"] for v in vs if PARK_RE.search(v))
         veh = Counter(rows["vehicle_type"].dropna())
         loc = Counter(rows["locality"])
         juncs = Counter(j for j in rows["junction_clean"] if j)
         station = Counter(rows["police_station"].dropna())
 
-        # Hour-of-day profile (24) -> powers the predictive deployment slider.
+        #Hour-of-day profile (24) -> powers the predictive deployment slider.
         hour_counts = rows["hour"].value_counts()
         hourly = [int(hour_counts.get(h, 0)) for h in range(24)]
         top_hours = sorted(sorted(range(24), key=lambda h: hourly[h], reverse=True)[:3])
@@ -332,8 +325,8 @@ def build_zones(df: pd.DataFrame, cells: pd.DataFrame, top_cells: int = 600) -> 
         if not name:
             name = loc.most_common(1)[0][0] if loc else "Unnamed zone"
 
-        # Layer 4 approximate obstruction outputs.
-        # Name is intentionally risk/estimated, not measured delay.
+        #Layer 4 approximate obstruction outputs.
+        #Name is intentionally risk/estimated, not measured delay.
         lane_blockage_risk_pct = round(5 + 45 * (zflow / 100), 1)
         band = impact_band(zflow)
         evidence = []
@@ -382,8 +375,8 @@ def build_zones(df: pd.DataFrame, cells: pd.DataFrame, top_cells: int = 600) -> 
 
     span_days = int(df["date"].nunique()) or 1
 
-    # Baseline forecast first, then supervised ML overwrites the dashboard-facing
-    # forecast fields when training succeeds. This keeps the app robust.
+    #Baseline forecast first, then supervised ML overwrites the dashboard-facing
+    #forecast fields when training succeeds. This keeps the app robust.
     print(f"  hot rows assigned to zones: {len(df_hot):,}", flush=True)
     attach_hourly_forecasts(zones, span_days=span_days)
     print("  training supervised ML forecast ...", flush=True)
@@ -400,9 +393,7 @@ def build_zones(df: pd.DataFrame, cells: pd.DataFrame, top_cells: int = 600) -> 
     return zones, ml_summary, ai_summary, ai_alerts
 
 
-# --------------------------------------------------------------------------
-# Layer 1. Hourly hotspot prediction + simple persistence backtest
-# --------------------------------------------------------------------------
+#Layer 1. Hourly hotspot prediction + simple persistence backtest
 def attach_hourly_forecasts(zones: list[dict], span_days: int) -> None:
     """Attach per-hour expected demand and normalized deployment-risk forecast.
 
@@ -413,21 +404,21 @@ def attach_hourly_forecasts(zones: list[dict], span_days: int) -> None:
     if not zones:
         return
 
-    # First pass: expected violations per calendar day/hour and raw deployment pressure.
+    #First pass: expected violations per calendar day/hour and raw deployment pressure.
     by_hour_raw = [[] for _ in range(24)]
     for z in zones:
         expected = [round((cnt + 0.25) / span_days, 3) for cnt in z["hourly"]]
-        # confidence rises with recurrence and sample size, capped at 100.
+        #confidence rises with recurrence and sample size, capped at 100.
         confidence = min(100.0, 35 + 40 * z["recurrence"] + 25 * min(1.0, z["violations"] / 1500))
         z["expected_hourly"] = expected
         z["prediction_confidence"] = round(confidence, 1)
         z["forecast_model"] = "hour-of-day persistence × CIRS × flow-impact risk"
         raw = []
         for h, exp in enumerate(expected):
-            # Hourly forecast score before normalization.
-            # The expected count handles demand; CIRS + flow impact handle enforcement value.
+            #Hourly forecast score before normalization.
+            #The expected count handles demand; CIRS + flow impact handle enforcement value.
             v = exp * (0.55 + z["cis"] / 100) * (0.55 + z["flow_impact_score"] / 100)
-            # Rush-hour violations are operationally more valuable to prevent.
+            #Rush-hour violations are operationally more valuable to prevent.
             if h in PEAK_HOURS:
                 v *= 1.12
             raw.append(v)
@@ -465,9 +456,7 @@ def build_prediction_summary(zones: list[dict]) -> dict:
 
 
 
-# --------------------------------------------------------------------------
-# Layer 1B. Supervised ML hotspot forecasting
-# --------------------------------------------------------------------------
+#Layer 1B. Supervised ML hotspot forecasting
 def _time_features(frame: pd.DataFrame, max_day_idx: int) -> pd.DataFrame:
     """Attach cyclic and rush-hour features for tree-based forecasting."""
     out = frame.copy()
@@ -589,7 +578,7 @@ def attach_supervised_ml_forecasts(df_zone: pd.DataFrame, zones: list[dict], spa
             "peak_share_zone", "lane_blockage_risk_pct", "log_zone_violations", "zone_cells",
         ]
 
-        # Fill any all-zero history means for zone-hours that never appeared.
+        #Fill any all-zero history means for zone-hours that never appeared.
         for tbl in (train_tbl, valid_tbl, all_feature_tbl):
             tbl[features] = tbl[features].replace([np.inf, -np.inf], 0).fillna(0)
 
@@ -618,7 +607,7 @@ def attach_supervised_ml_forecasts(df_zone: pd.DataFrame, zones: list[dict], spa
         covered_actual = float(actual_zone.loc[list(pred_top & set(actual_zone.index))].sum()) if pred_top else 0.0
         coverage_at_k = round(100 * covered_actual / max(total_actual, 1e-9), 1)
 
-        # Train final model on both supervised windows and forecast from all available history.
+        #Train final model on both supervised windows and forecast from all available history.
         final_train = pd.concat([train_tbl, valid_tbl], ignore_index=True)
         final_model = RandomForestRegressor(
             n_estimators=100,
@@ -630,7 +619,7 @@ def attach_supervised_ml_forecasts(df_zone: pd.DataFrame, zones: list[dict], spa
         final_model.fit(final_train[features], final_train["target_per_day"])
         all_feature_tbl["ml_pred_per_day"] = np.clip(final_model.predict(all_feature_tbl[features]), 0, None)
 
-        # Attach 24-hour arrays to every zone.
+        #Attach 24-hour arrays to every zone.
         pred_map = all_feature_tbl.pivot(index="zone", columns="hour", values="ml_pred_per_day").fillna(0)
         for z in zones:
             zid = int(z["id"])
@@ -654,13 +643,13 @@ def attach_supervised_ml_forecasts(df_zone: pd.DataFrame, zones: list[dict], spa
         hour_max = [max(vals) if vals else 1 for vals in raw_by_hour]
         for z in zones:
             z["ml_forecast_scores"] = [round(100 * v / max(hour_max[h], 1e-9), 1) for h, v in enumerate(z["_ml_raw"])]
-            # Peak patrol window should reflect this zone's own expected demand, not
-            # hour-normalized rank, otherwise a top zone can look equally "100" all day.
+            #Peak patrol window should reflect this zone's own expected demand, not
+            #hour-normalized rank, otherwise a top zone can look equally "100" all day.
             z["ml_forecast_peak_hours"] = sorted(
                 sorted(range(24), key=lambda h: z["ml_expected_hourly"][h], reverse=True)[:3]
             )
 
-            # Make ML the default dashboard forecast while retaining baseline fields.
+            #Make ML the default dashboard forecast while retaining baseline fields.
             z["expected_hourly"] = z["ml_expected_hourly"]
             z["forecast_scores"] = z["ml_forecast_scores"]
             z["forecast_peak_hours"] = z["ml_forecast_peak_hours"]
@@ -687,9 +676,7 @@ def attach_supervised_ml_forecasts(df_zone: pd.DataFrame, zones: list[dict], spa
         return {"enabled": False, "reason": f"ML forecast failed: {exc}"}
 
 
-# --------------------------------------------------------------------------
 # Layer 6. AI early-warning anomaly detector
-# --------------------------------------------------------------------------
 def build_ai_early_warnings(df_zone: pd.DataFrame, zones: list[dict]) -> tuple[dict, list[dict]]:
     """Detect emerging zone-hour surges with an unsupervised ML model.
 
@@ -764,7 +751,7 @@ def build_ai_early_warnings(df_zone: pd.DataFrame, zones: list[dict]) -> tuple[d
         tbl["severity_shift"] = tbl["recent_avg_severity"] - tbl["base_avg_severity"]
         tbl["obstruction_shift"] = tbl["recent_avg_obstruction"] - tbl["base_avg_obstruction"]
 
-        # The normal training profile represents "recent behaves like baseline".
+        #The normal training profile represents "recent behaves like baseline".
         normal = tbl.copy()
         normal["recent_weighted_per_day"] = normal["base_weighted_per_day"]
         normal["recent_raw_per_day"] = normal["base_raw_per_day"]
@@ -792,7 +779,7 @@ def build_ai_early_warnings(df_zone: pd.DataFrame, zones: list[dict]) -> tuple[d
         )
         detector.fit(normal[features])
 
-        # Higher = more abnormal.
+        #Higher = more abnormal.
         raw_anom = -detector.decision_function(tbl[features])
         lo, hi = float(raw_anom.min()), float(raw_anom.max())
         tbl["anomaly_score"] = 100 * (raw_anom - lo) / max(hi - lo, 1e-9)
@@ -804,7 +791,7 @@ def build_ai_early_warnings(df_zone: pd.DataFrame, zones: list[dict]) -> tuple[d
             0.08 * tbl["lane_blockage_risk_pct"]
         )
 
-        # Keep only meaningful recent surges, not tiny statistical artifacts.
+        #Keep only meaningful recent surges, not tiny statistical artifacts.
         candidates = tbl[
             (tbl["recent_weighted_per_day"] >= 0.15) &
             ((tbl["surge_delta"] > 0.05) | (tbl["surge_ratio"] >= 1.35))
@@ -845,7 +832,7 @@ def build_ai_early_warnings(df_zone: pd.DataFrame, zones: list[dict]) -> tuple[d
                 "recommended_action": "Pre-position patrol/tow unit" if level != "Watch" else "Watchlist and rotate patrol",
             })
 
-        # Attach the strongest alert back to each zone for modals/list badges.
+        #Attach the strongest alert back to each zone for modals/list badges.
         by_zone: dict[int, list[dict]] = {}
         for a in alerts:
             by_zone.setdefault(a["zone_id"], []).append(a)
@@ -881,9 +868,7 @@ def build_ai_early_warnings(df_zone: pd.DataFrame, zones: list[dict]) -> tuple[d
         return {"enabled": False, "reason": f"AI early-warning detector failed: {exc}"}, []
 
 
-# --------------------------------------------------------------------------
-# 6. Temporal demand surface
-# --------------------------------------------------------------------------
+#6. Temporal demand surface
 def build_temporal(df: pd.DataFrame) -> dict:
     mat = np.zeros((7, 24), dtype=int)
     for wd, hr in zip(df.weekday, df.hour):
@@ -903,9 +888,7 @@ def build_temporal(df: pd.DataFrame) -> dict:
     }
 
 
-# --------------------------------------------------------------------------
-# 7. Categorical breakdowns
-# --------------------------------------------------------------------------
+#7. Categorical breakdowns
 def build_breakdowns(df: pd.DataFrame) -> dict:
     vio = Counter(v for vs in df["violations"] for v in vs if PARK_RE.search(v))
     veh = Counter(df["vehicle_type"].dropna())
@@ -923,9 +906,7 @@ def build_breakdowns(df: pd.DataFrame) -> dict:
     }
 
 
-# --------------------------------------------------------------------------
-# Orchestrate
-# --------------------------------------------------------------------------
+#Orchestrate
 def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
     df = load()
@@ -941,15 +922,15 @@ def main() -> None:
     breakdowns = build_breakdowns(df)
     prediction_summary = build_prediction_summary(zones)
 
-    # ---- Heatmap points (cap for browser performance) -------------------
-    # Use Layer 4 flow impact so the heatmap represents enforcement value, not only volume.
+    #---- Heatmap points (cap for browser performance) -------------------
+    #Use Layer 4 flow impact so the heatmap represents enforcement value, not only volume.
     heat = cells.sort_values("flow_impact_score", ascending=False).head(4000)
     heat_points = [
         [round(r.lat, 5), round(r.lon, 5), round(float(r.flow_impact_score) / 100, 3)]
         for r in heat.itertuples()
     ]
 
-    # ---- Summary KPIs ---------------------------------------------------
+    #---- Summary KPIs ---------------------------------------------------
     span_days = int(df["date"].nunique()) or 1
     peak_share = temporal["peak_share"]
 
@@ -965,7 +946,7 @@ def main() -> None:
     avg_flow = round(float(np.mean([z["flow_impact_score"] for z in zones])), 1) if zones else 0
     avg_pred_conf = round(float(np.mean([z["prediction_confidence"] for z in zones])), 1) if zones else 0
 
-    # Impact-band breakdown from zones.
+    #Impact-band breakdown from zones.
     band_order = ["Severe", "High", "Moderate", "Low"]
     band_counts = Counter(z["flow_impact_band"] for z in zones)
     breakdowns["impact_bands"] = [{"label": b, "n": int(band_counts.get(b, 0))} for b in band_order]
